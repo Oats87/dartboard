@@ -195,7 +195,7 @@ func createRegistrationCommand(command, publicIP, privateIP string, machinePool 
 func RegisterCustomCluster(client *rancher.Client, steveObject *v1.SteveAPIObject, cluster *apisV1.Cluster, nodes []tofu.Node) (*v1.SteveAPIObject, error) {
 	quantityPerPool := []int32{}
 	rolesPerPool := []string{}
-	fmt.Println("Building role oommand")
+	logrus.Infof("[%s/%s] Running custom cluster registration", cluster.Namespace, cluster.Name)
 	for _, pool := range cluster.Spec.RKEConfig.MachinePools {
 		var finalRoleCommand string
 		if pool.ControlPlaneRole {
@@ -248,16 +248,16 @@ func RegisterCustomCluster(client *rancher.Client, steveObject *v1.SteveAPIObjec
 		for nodeIndex := range int(quantityPerPool[poolIndex]) {
 			node := nodes[totalNodesObserved+nodeIndex]
 
-			logrus.Infof("Execute Registration Command for node named %s", node.Name)
-			logrus.Infof("Linux pool detected, using bash...")
+			logrus.Infof("[%s/%s] (%s) Executing registration command for node", cluster.Namespace, cluster.Name, node.Name)
+			logrus.Infof("[%s/%s] (%s) Linux nodepool detected, using bash...", cluster.Namespace, cluster.Name, node.Name)
 
 			command = fmt.Sprintf("%s %s", token.InsecureNodeCommand, poolRole)
 			command = createRegistrationCommand(command, node.PublicIP, node.PrivateIP, cluster.Spec.RKEConfig.MachinePools[poolIndex])
-			logrus.Infof("Node command: %s", command)
+			logrus.Infof("[%s/%s] (%s) Node command: %s", cluster.Namespace, cluster.Name, node.Name, command)
 
 			nodeSSHKey, err := tofu.ReadBytesFromPath(node.SSHKeyPath)
 			if err != nil {
-				return nil, fmt.Errorf("error getting node's SSH Key from %s: %w", node.SSHKeyPath, err)
+				return nil, fmt.Errorf("[%s/%s] (%s) error getting SSH key for node from (%s): %w", cluster.Namespace, cluster.Name, node.Name, node.SSHKeyPath, err)
 			}
 			shepherdNode := shepherdnodes.Node{
 				PublicIPAddress:  node.PublicIP,
@@ -269,18 +269,22 @@ func RegisterCustomCluster(client *rancher.Client, steveObject *v1.SteveAPIObjec
 			if err != nil {
 				return nil, err
 			}
-			logrus.Info(output)
+			logrus.Infof("[%s/%s] (%s) Executed Output: %s", cluster.Namespace, cluster.Name, node.Name, output)
 		}
 		totalNodesObserved += int(quantityPerPool[poolIndex])
 	}
 
 	err = wait.WatchWait(result, checkFunc)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("[%s/%s] error encountered during wait for provisioning cluster ready status: %w", cluster.Namespace, cluster.Name, err)
 	}
+	logrus.Infof("[%s/%s] Provisioning cluster is now ready", cluster.Namespace, cluster.Name)
 
 	registeredCluster, err := client.Steve.SteveType(stevetypes.Provisioning).ByID(cluster.Namespace + "/" + cluster.Name)
-	return registeredCluster, err
+	if err != nil {
+		return nil, fmt.Errorf("[%s/%s] error encountered during provisioning cluster retrieval: %w", cluster.Namespace, cluster.Name, err)
+	}
+	return registeredCluster, nil
 }
 
 // VerifyClusterCreated confirms that the cluster resource exists

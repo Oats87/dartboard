@@ -128,5 +128,7 @@ variable "network_config" {
     ssh_bastion_host     = optional(string)
     ssh_bastion_user     = optional(string)
     ssh_bastion_key_path = optional(string)
+    images_by_name       = optional(map(string))
+    ssh_keys_by_name = optional(map(map(string)))
   })
 }

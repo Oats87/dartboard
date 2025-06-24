@@ -2,6 +2,7 @@
 users:
   - default
   - ${ssh_user}
+user: ${ssh_user}
 password: ${password}
 disable_root: false
 chpasswd:
@@ -10,6 +11,14 @@ chpasswd:
     - {name: ${ssh_user}, password: ${password}, type: text}
 package_update: true
 write_files:
+  - path: /etc/NetworkManager/conf.d/noauto.conf
+    permissions: 0644
+    owner: root
+    content: |
+      [main]
+      # Do not do automatic (DHCP/SLAAC) configuration on ethernet devices
+      # with no other matching connections.
+      no-auto-default=*
   - path: /etc/sysctl.d/10-disable-ipv6.conf
     permissions: 0644
     owner: root
