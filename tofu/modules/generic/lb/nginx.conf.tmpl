@@ -1,0 +1,49 @@
+worker_processes auto;
+
+events {
+    worker_connections 16384;
+    multi_accept on;
+    use epoll;
+}
+
+stream {
+    upstream rancher_nodes_http {
+        %{ for server in servers ~}
+        server ${server}:80 max_fails=3 fail_timeout=5s;
+        %{ endfor ~}
+    }
+    server {
+        listen 80;
+        proxy_pass rancher_nodes_http;
+    }
+
+    upstream rancher_nodes_https {
+        %{ for server in servers ~}
+        server ${server}:443 max_fails=3 fail_timeout=5s;
+        %{ endfor ~}
+    }
+    server {
+        listen 443;
+        proxy_pass rancher_nodes_https;
+    }
+
+    upstream rancher_nodes_rke2_api {
+        %{ for server in servers ~}
+        server ${server}:9345 max_fails=3 fail_timeout=5s;
+        %{ endfor ~}
+    }
+    server {
+        listen 9345;
+        proxy_pass rancher_nodes_rke2_api;
+    }
+
+    upstream rancher_nodes_rke2_kube_api {
+        %{ for server in servers ~}
+        server ${server}:6443 max_fails=3 fail_timeout=5s;
+        %{ endfor ~}
+    }
+    server {
+        listen 6443;
+        proxy_pass rancher_nodes_rke2_kube_api;
+    }
+}

@@ -110,9 +110,9 @@ func Deploy(cli *cli.Context) error {
 		if err = chartInstallRancher(r, rancherImageTag, &upstream); err != nil {
 			return err
 		}
-		if err = chartInstallRancherIngress(&upstream); err != nil {
-			return err
-		}
+		//if err = chartInstallRancherIngress(&upstream); err != nil {
+		//	return err
+		//}
 		if err = chartInstallCgroupsExporter(&upstream); err != nil {
 			return err
 		}
@@ -313,12 +313,11 @@ func chartInstallRancher(r *dart.Dart, rancherImageTag string, cluster *tofu.Clu
 
 	chartVals := getRancherValsJSON(r.ChartVariables.RancherImageOverride, rancherImageTag, r.ChartVariables.AdminPassword, rancherClusterName, extraEnv, r.ChartVariables.RancherReplicas)
 
-	fmt.Printf("\n\nRANCHER CHART VALS:\n")
-
+	chartValString := "RANCHER CHART VALS:\n"
 	for key, value := range chartVals {
-		fmt.Printf("\t%s = %v\n", key, value)
+		chartValString += fmt.Sprintf("%s = %v\n", key, value)
 	}
-
+	logrus.Infof(chartValString)
 	return chartInstall(cluster.Kubeconfig, chartRancher, chartVals)
 }
 
@@ -541,6 +540,7 @@ func getRancherValsJSON(rancherImageOverride, rancherImageTag, bootPwd, hostname
 			"initialDelaySeconds": 30,
 			"periodSeconds":       3600,
 		},
+		"hostPort": "444",
 	}
 
 	if rancherImageOverride != "" {

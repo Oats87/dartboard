@@ -109,7 +109,7 @@ func (br *SequencedBatchRunner[J]) Run(batch []J,
 		time.Sleep(shepherddefaults.TwoMinuteTimeout)
 	} else {
 		// Otherwise, go straight into the next batch
-		fmt.Printf("Batch done: %d/%d skipped; continuing without sleep.\n", numSkipped, len(batch))
+		logrus.Infof("Batch done: %d/%d skipped; continuing without sleep.\n", numSkipped, len(batch))
 	}
 
 	// Clean up

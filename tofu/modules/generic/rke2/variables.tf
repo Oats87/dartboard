@@ -99,6 +99,11 @@ variable "node_module_variables" {
   type        = any
 }
 
+variable "lb_node_module_variables" {
+  description = "Load Balancer Node module-specific configuration variables for the load balancer used for this cluster"
+  type        = any
+}
+
 variable "network_config" {
   description = "Network module outputs, to be passed to node_module"
   type        = any

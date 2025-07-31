@@ -36,6 +36,7 @@ variable "upstream_cluster" {
     create_tunnels              = bool // Whether ssh tunnels to the downstream cluster's first server node should be created. Default false
 
     node_module_variables = any // Node module-specific variables
+    lb_node_module_variables = any // Node module-specific variables
   })
 }
 

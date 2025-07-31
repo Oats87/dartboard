@@ -71,3 +71,11 @@ variable "ssh_bastion_key_path" {
   type        = string
   default     = null
 }
+
+variable "images_by_name" {
+  default = null
+}
+
+variable "ssh_keys_by_name" {
+  default = null
+}

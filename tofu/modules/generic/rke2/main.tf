@@ -6,6 +6,20 @@ terraform {
   }
 }
 
+module "load_balancer" {
+  source               = "../lb"
+  project_name         = var.project_name
+  name                 = "${var.name}-lb"
+  ssh_private_key_path = var.ssh_private_key_path
+  ssh_user             = var.ssh_user
+  node_module           = var.node_module
+  node_module_variables = var.lb_node_module_variables
+  network_config        = var.network_config
+  servers = concat(
+    [for node in module.server_nodes : node.private_ip],
+    [for node in module.agent_nodes : node.private_ip]
+  )
+}
 
 module "server_nodes" {
   count                = var.server_count
@@ -48,7 +62,7 @@ resource "ssh_sensitive_resource" "first_server_installation" {
   file {
     content = templatefile("${path.module}/install_rke2.sh", {
       distro_version = var.distro_version,
-      sans           = concat([module.server_nodes[0].private_name], var.sans)
+      sans           = concat([module.load_balancer.config.lb_node.private_name, module.server_nodes[0].private_name], var.sans)
       type           = "server"
       token          = null
       server_url     = null
@@ -139,7 +153,7 @@ resource "ssh_resource" "agent_installation" {
       sans           = [module.agent_nodes[count.index].private_name]
       type           = "agent"
       token          = ssh_sensitive_resource.first_server_installation[0].result
-      server_url     = "https://${module.server_nodes[0].private_name}:9345"
+      server_url     = "https://${module.load_balancer.config.lb_node.private_name}:9345"
       labels = var.reserve_node_for_monitoring && count.index == 0 ? [
         { key : "monitoring", value : "true" }
       ] : []

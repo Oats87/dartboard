@@ -12,8 +12,8 @@ replace (
 	github.com/openshift/client-go => github.com/openshift/client-go v0.0.0-20200521150516-05eb9880269c
 	github.com/rancher/rancher/pkg/apis => github.com/rancher/rancher/pkg/apis v0.0.0-20250410003522-2a1bf3d05723
 	github.com/rancher/rancher/pkg/client => github.com/rancher/rancher/pkg/client v0.0.0-20250212213103-5c3550f55322
-	github.com/rancher/shepherd => github.com/rancher/shepherd v0.0.0-20250514182450-235145b2fd2a
-
+	//github.com/rancher/shepherd => github.com/rancher/shepherd v0.0.0-20250514182450-235145b2fd2a
+	github.com/rancher/shepherd => ../shepherd
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc => go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.53.0
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp => go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.53.0
 	go.opentelemetry.io/otel => go.opentelemetry.io/otel v1.28.0
@@ -57,6 +57,8 @@ replace (
 	k8s.io/sample-apiserver => k8s.io/sample-apiserver v0.32.2
 	oras.land/oras-go => oras.land/oras-go v1.2.2 // for docker 20.10.x compatibility
 	sigs.k8s.io/cluster-api => sigs.k8s.io/cluster-api v1.8.3
+
+	k8s.io/externaljwt => k8s.io/externaljwt v0.33.0
 )
 
 // replace (
@@ -140,6 +142,7 @@ replace (
 // )
 
 require (
+
 	al.essio.dev/pkg/shellescape v1.6.0
 	github.com/harvester/harvester v1.5.0
 	github.com/matoous/go-nanoid/v2 v2.1.0

@@ -13,7 +13,7 @@ if [ -d /data ]; then
 fi
 
 # https://docs.rke2.io/known_issues/#networkmanager
-if systemctl status NetworkManager; then
+if [ $(systemctl show --property=LoadState --value "NetworkManager") == "loaded" ]; then
   cat >/etc/NetworkManager/conf.d/rke2-canal.conf <<EOF
 [keyfile]
 unmanaged-devices=interface-name:cali*;interface-name:flannel*
@@ -64,6 +64,7 @@ tls-san:
 %{ endfor ~}
 kubelet-arg: "config=/etc/rancher/rke2/kubelet-custom.config"
 kube-controller-manager-arg: "node-cidr-mask-size=${node_cidr_mask_size}"
+etcd-arg: "quota-backend-bytes=8589934592"
 EOF
 
 cat > /etc/rancher/rke2/kubelet-custom.config <<EOF
@@ -81,6 +82,11 @@ cat >>/root/.bashrc <<EOF
 export PATH=\$PATH:/var/lib/rancher/rke2/bin/
 export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
 EOF
+
+if [ "${type}" == "server" ]; then
+  mkdir -p /var/lib/rancher/rke2/server/db
+  mount -o size=16G -t tmpfs none /var/lib/rancher/rke2/server/db
+fi
 
 # installation
 export INSTALL_RKE2_VERSION=${distro_version}

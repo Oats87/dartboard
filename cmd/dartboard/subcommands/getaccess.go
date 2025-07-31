@@ -17,7 +17,7 @@ limitations under the License.
 package subcommands
 
 import (
-	"fmt"
+	"github.com/sirupsen/logrus"
 	"strings"
 
 	"github.com/rancher/dartboard/internal/tofu"
@@ -50,11 +50,8 @@ func GetAccess(cli *cli.Context) error {
 	if err == nil {
 		rancherURL = upstreamAddresses.Local.HTTPSURL
 	} else {
-		fmt.Printf("Error getting application addresses for cluster upstream: %v\n", err)
+		logrus.Errorf("Error getting application addresses for cluster upstream: %v", err)
 	}
-
-	fmt.Println("\n\n\n*** ACCESS DETAILS")
-	fmt.Println()
 
 	printAccessDetails(r, "UPSTREAM", upstream, rancherURL)
 	for name, downstream := range downstreams {

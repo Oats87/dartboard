@@ -36,6 +36,7 @@ module "upstream_cluster" {
   node_module               = var.node_module
   network_config            = var.network_config
   node_module_variables     = var.upstream_cluster.node_module_variables
+  lb_node_module_variables     = var.upstream_cluster.lb_node_module_variables
 }
 
 module "tester_cluster" {

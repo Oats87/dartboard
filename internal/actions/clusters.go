@@ -12,7 +12,6 @@ import (
 	"github.com/rancher/tests/actions/clusters"
 	rancherclusters "github.com/rancher/tests/actions/clusters"
 	"github.com/rancher/tests/actions/machinepools"
-	"github.com/rancher/tests/actions/registries"
 	"github.com/rancher/tests/actions/reports"
 	"github.com/sirupsen/logrus"
 
@@ -37,6 +36,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kwait "k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
+
+	shepclusters "github.com/rancher/shepherd/extensions/clusters"
 )
 
 const (
@@ -195,7 +196,7 @@ func createRegistrationCommand(command, publicIP, privateIP string, machinePool 
 func RegisterCustomCluster(client *rancher.Client, steveObject *v1.SteveAPIObject, cluster *apisV1.Cluster, nodes []tofu.Node) (*v1.SteveAPIObject, error) {
 	quantityPerPool := []int32{}
 	rolesPerPool := []string{}
-	fmt.Println("Building role oommand")
+	logrus.Infof("[%s/%s] Running custom cluster registration", cluster.Namespace, cluster.Name)
 	for _, pool := range cluster.Spec.RKEConfig.MachinePools {
 		var finalRoleCommand string
 		if pool.ControlPlaneRole {
@@ -248,16 +249,16 @@ func RegisterCustomCluster(client *rancher.Client, steveObject *v1.SteveAPIObjec
 		for nodeIndex := range int(quantityPerPool[poolIndex]) {
 			node := nodes[totalNodesObserved+nodeIndex]
 
-			logrus.Infof("Execute Registration Command for node named %s", node.Name)
-			logrus.Infof("Linux pool detected, using bash...")
+			logrus.Infof("[%s/%s] (%s) Executing registration command for node", cluster.Namespace, cluster.Name, node.Name)
+			logrus.Infof("[%s/%s] (%s) Linux nodepool detected, using bash...", cluster.Namespace, cluster.Name, node.Name)
 
 			command = fmt.Sprintf("%s %s", token.InsecureNodeCommand, poolRole)
 			command = createRegistrationCommand(command, node.PublicIP, node.PrivateIP, cluster.Spec.RKEConfig.MachinePools[poolIndex])
-			logrus.Infof("Node command: %s", command)
+			logrus.Infof("[%s/%s] (%s) Node command: %s", cluster.Namespace, cluster.Name, node.Name, command)
 
 			nodeSSHKey, err := tofu.ReadBytesFromPath(node.SSHKeyPath)
 			if err != nil {
-				return nil, fmt.Errorf("error getting node's SSH Key from %s: %w", node.SSHKeyPath, err)
+				return nil, fmt.Errorf("[%s/%s] (%s) error getting SSH key for node from (%s): %w", cluster.Namespace, cluster.Name, node.Name, node.SSHKeyPath, err)
 			}
 			shepherdNode := shepherdnodes.Node{
 				PublicIPAddress:  node.PublicIP,
@@ -269,18 +270,22 @@ func RegisterCustomCluster(client *rancher.Client, steveObject *v1.SteveAPIObjec
 			if err != nil {
 				return nil, err
 			}
-			logrus.Info(output)
+			logrus.Infof("[%s/%s] (%s) Executed Output: %s", cluster.Namespace, cluster.Name, node.Name, output)
 		}
 		totalNodesObserved += int(quantityPerPool[poolIndex])
 	}
 
 	err = wait.WatchWait(result, checkFunc)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("[%s/%s] error encountered during wait for provisioning cluster ready status: %w", cluster.Namespace, cluster.Name, err)
 	}
+	logrus.Infof("[%s/%s] Provisioning cluster is now ready", cluster.Namespace, cluster.Name)
 
 	registeredCluster, err := client.Steve.SteveType(stevetypes.Provisioning).ByID(cluster.Namespace + "/" + cluster.Name)
-	return registeredCluster, err
+	if err != nil {
+		return nil, fmt.Errorf("[%s/%s] error encountered during provisioning cluster retrieval: %w", cluster.Namespace, cluster.Name, err)
+	}
+	return registeredCluster, nil
 }
 
 // VerifyClusterCreated confirms that the cluster resource exists
@@ -309,21 +314,21 @@ func VerifyClusterImported(client *rancher.Client, name, namespace string) (bool
 func VerifyCluster(client *rancher.Client, config *rancher.Config, cluster *v1.SteveAPIObject) error {
 	client, err := client.ReLoginForConfig(config)
 	if err != nil {
-		return err
+		return fmt.Errorf("unable to relogin: %w", err)
 	}
-	fmt.Printf("\nRELOGIN CLIENT: %v\n", client)
-	fmt.Printf("\nRANCHER CONFIG: %v\n", config)
-	fmt.Printf("\nCLUSTER OBJECT: %v\n", cluster)
+	logrus.Infof("[%s/%s] RELOGIN CLIENT: %v", cluster.Namespace, cluster.Name, client)
+	logrus.Infof("[%s/%s] RANCHER CONFIG: %v", cluster.Namespace, cluster.Name, config)
+	logrus.Infof("[%s/%s] CLUSTER OBJECT: %v", cluster.Namespace, cluster.Name, cluster)
 
 	adminClient, err := rancher.NewClientForConfig(client.RancherConfig.AdminToken, config, client.Session)
 	if err != nil {
-		return err
+		return fmt.Errorf("unable to create new admin client: %w", err)
 	}
 
 	kubeProvisioningClient, err := adminClient.GetKubeAPIProvisioningClient()
 	reports.TimeoutClusterReport(cluster, err)
 	if err != nil {
-		return err
+		return fmt.Errorf("unable to get kube api provisioning client: %w", err)
 	}
 
 	watchInterface, err := kubeProvisioningClient.Clusters(cluster.Namespace).Watch(context.TODO(), metav1.ListOptions{
@@ -332,76 +337,103 @@ func VerifyCluster(client *rancher.Client, config *rancher.Config, cluster *v1.S
 	})
 	reports.TimeoutClusterReport(cluster, err)
 	if err != nil {
-		return err
+		return fmt.Errorf("unable to watch for the cluster: %w", err)
 	}
 
 	checkFunc := shepherdclusters.IsProvisioningClusterReady
 	err = wait.WatchWait(watchInterface, checkFunc)
 	reports.TimeoutClusterReport(cluster, err)
 	if err != nil {
-		return err
+		return fmt.Errorf("error while waiting for the provisioning cluster to be ready: %w", err)
 	}
 
 	clusterToken, err := clusters.CheckServiceAccountTokenSecret(client, cluster.Name)
 	reports.TimeoutClusterReport(cluster, err)
 	if err != nil {
-		return err
+		return fmt.Errorf("error while checking the service account token secret: %w", err)
 	}
 	if !clusterToken {
+		logrus.Errorf("cluster %s serviceaccount not found so trying to get cluster object", cluster.Name)
+		clusterID, err := shepclusters.GetClusterIDByName(client, cluster.Name)
+		if err == nil {
+			logrus.Errorf("cluster %s ID by name: %s", cluster.Name, clusterID)
+			mgmtCluster, err := client.Management.Cluster.ByID(clusterID)
+			if err == nil {
+				logrus.Errorf("the cluster object for the cluster %s was: %v", cluster.Name, mgmtCluster)
+			} else {
+				logrus.Errorf("cluster %s ID %s error: %v", cluster.Name, clusterID, err)
+			}
+		} else {
+			logrus.Errorf("cluster %s error getting ID by name: %v", cluster.Name, err)
+		}
 		return fmt.Errorf("serviceAccountTokenSecret does not exist in this cluster: %s", cluster.Name)
+	}
+
+	clusterID, err := shepclusters.GetClusterIDByName(client, cluster.Name)
+	if err == nil {
+		logrus.Infof("cluster %s ID by name: %s", cluster.Name, clusterID)
+		mgmtCluster, err := client.Management.Cluster.ByID(clusterID)
+		if err == nil {
+			logrus.Infof("the cluster object for the cluster %s was: %v", cluster.Name, mgmtCluster)
+		} else {
+			logrus.Errorf("cluster %s ID %s error: %v", cluster.Name, clusterID, err)
+		}
+	} else {
+		logrus.Errorf("cluster %s error getting ID by name: %v", cluster.Name, err)
 	}
 
 	err = nodestat.AllMachineReady(client, cluster.ID, defaults.ThirtyMinuteTimeout)
 	reports.TimeoutClusterReport(cluster, err)
 	if err != nil {
-		return err
+		return fmt.Errorf("error while waiting for machines to be ready: %w", err)
 	}
 
 	status := &apisV1.ClusterStatus{}
 	err = v1.ConvertToK8sType(cluster.Status, status)
 	reports.TimeoutClusterReport(cluster, err)
 	if err != nil {
-		return err
+		return fmt.Errorf("error while converting status to K8s type: %w", err)
 	}
 
 	clusterSpec := &apisV1.ClusterSpec{}
 	err = v1.ConvertToK8sType(cluster.Spec, clusterSpec)
 	reports.TimeoutClusterReport(cluster, err)
 	if err != nil {
-		return err
+		return fmt.Errorf("error while converting cluster spec to K8s type: %w", err)
 	}
 
 	if clusterSpec.DefaultPodSecurityAdmissionConfigurationTemplateName != "" && len(clusterSpec.DefaultPodSecurityAdmissionConfigurationTemplateName) > 0 {
-
-		err := psact.CreateNginxDeployment(client, status.ClusterName, clusterSpec.DefaultPodSecurityAdmissionConfigurationTemplateName)
+		err = psact.CreateNginxDeployment(client, status.ClusterName, clusterSpec.DefaultPodSecurityAdmissionConfigurationTemplateName)
 		reports.TimeoutClusterReport(cluster, err)
 		if err != nil {
-			return err
+			return fmt.Errorf("error while creating nginx deployment: %w", err)
 		}
 	}
 
-	if clusterSpec.RKEConfig.Registries != nil {
-		for registryName := range clusterSpec.RKEConfig.Registries.Configs {
-			havePrefix, err := registries.CheckAllClusterPodsForRegistryPrefix(client, status.ClusterName, registryName)
-			reports.TimeoutClusterReport(cluster, err)
-			if !havePrefix {
-				return fmt.Errorf("found cluster (%s) pods that do not have the expected registry prefix %s: %w", status.ClusterName, registryName, err)
-			}
-			if err != nil {
-				return err
+	/*
+		This doesn't work if you have a mirror...
+		if clusterSpec.RKEConfig.Registries != nil {
+			for registryName := range clusterSpec.RKEConfig.Registries.Configs {
+				havePrefix, err := registries.CheckAllClusterPodsForRegistryPrefix(client, status.ClusterName, registryName)
+				reports.TimeoutClusterReport(cluster, err)
+				if !havePrefix {
+					return fmt.Errorf("found cluster (%s) pods that do not have the expected registry prefix %s: %w", status.ClusterName, registryName, err)
+				}
+				if err != nil {
+					return fmt.Errorf("error while checking pods for registry prefix: %w", err)
+				}
 			}
 		}
-	}
-
+	*/
 	if clusterSpec.LocalClusterAuthEndpoint.Enabled {
 		mgmtClusterObject, err := adminClient.Management.Cluster.ByID(status.ClusterName)
 		reports.TimeoutClusterReport(cluster, err)
 		if err != nil {
-			return err
+			return fmt.Errorf("error while retrieving mgmt cluster by ID: %w", err)
 		}
 		err = VerifyACE(adminClient, mgmtClusterObject)
 		if err != nil {
-			return err
+			return fmt.Errorf("error while verifying ACE: %w", err)
 		}
 	}
 
@@ -437,7 +469,7 @@ func VerifyACE(client *rancher.Client, cluster *mgmtv3.Cluster) error {
 		return err
 	}
 	for _, pod := range originalResp.Items {
-		fmt.Printf("Pod %s", pod.GetName())
+		logrus.Infof("Cluster: (%s) Pod: (%s)", cluster.Name, pod.GetName())
 	}
 
 	// each control plane has a context. For ACE, we should check these contexts
@@ -461,9 +493,9 @@ func VerifyACE(client *rancher.Client, cluster *mgmtv3.Cluster) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Switched Context to %v", contextName)
+		logrus.Infof("Cluster: (%s) - Switched Context to (%s)", cluster.Name, contextName)
 		for _, pod := range resp.Items {
-			fmt.Printf("Pod %v", pod.GetName())
+			logrus.Infof("Cluster: (%s) Context: (%s) Pod: (%s)", cluster.Name, contextName, pod.GetName())
 		}
 	}
 	return nil

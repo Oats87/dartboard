@@ -1,6 +1,21 @@
 locals {
-  public_keys                       = compact([var.network_config.ssh_public_key, try(data.harvester_ssh_key.shared[0].public_key, null)])
-  template_user_data = templatefile("${path.module}/user_data.yaml", {
+  ssh_keys = {
+    for i, key in var.node_module_variables.ssh_shared_public_keys :
+    join("/", [key.namespace, key.name]) => var.network_config.ssh_keys_by_name[join("/", [key.namespace, key.name])]
+    if lookup(var.node_module_variables, "ssh_shared_public_keys", null) != null
+  }
+
+  public_keys                       = compact(concat(
+    [var.network_config.ssh_public_key],
+    [for i, key in local.ssh_keys : key["public_key"]]
+  ))
+
+  ssh_key_ids = compact(concat(
+    [var.network_config.ssh_public_key_id],
+    [for i, key in local.ssh_keys : key["id"]]
+  ))
+
+    template_user_data = templatefile("${path.module}/user_data.yaml", {
       ssh_user = var.ssh_user
       password = var.node_module_variables.password
       ssh_keys = local.public_keys
@@ -11,12 +26,13 @@ locals {
   private_network_interfaces = [for network in harvester_virtualmachine.this.network_interface[*] : {
     interface_name = network.interface_name
     ip_address     = network.ip_address
-    } if !var.network_config.public
+    } if !var.network_config.public && !strcontains(tostring(network.ip_address), ":")
   ]
   public_network_interfaces = [for network in harvester_virtualmachine.this.network_interface[*] : {
     interface_name = network.interface_name
     ip_address     = network.ip_address
-    } if var.network_config.public
+    } if var.network_config.public && !strcontains(tostring(network.ip_address), ":")
   ]
+
   image_namespace = replace(lower(var.node_module_variables.image_namespace != null ? var.node_module_variables.image_namespace : var.network_config.namespace), "/[^a-z0-9-]/", "-")  # Convert to valid Kubernetes name
 }

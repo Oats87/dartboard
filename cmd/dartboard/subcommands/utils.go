@@ -18,6 +18,7 @@ package subcommands
 
 import (
 	"fmt"
+	"github.com/sirupsen/logrus"
 	"path/filepath"
 
 	"github.com/rancher/dartboard/internal/docker"
@@ -61,9 +62,9 @@ func prepare(cli *cli.Context) (*tofu.Tofu, *dart.Dart, error) {
 		return nil, nil, err
 	}
 	d.TofuWorkspaceStatePath = absPath
-	fmt.Printf("Using dart: %s\n", dartPath)
-	fmt.Printf("OpenTofu main directory: %s\n", d.TofuMainDirectory)
-	fmt.Printf("Using Tofu workspace: %s\n", d.TofuWorkspace)
+	logrus.Infof("Using dart: %s", dartPath)
+	logrus.Infof("OpenTofu main directory: %s\n", d.TofuMainDirectory)
+	logrus.Infof("Using Tofu workspace: %s\n", d.TofuWorkspace)
 
 	err = vendored.ExtractBinaries()
 	if err != nil {
@@ -79,17 +80,18 @@ func prepare(cli *cli.Context) (*tofu.Tofu, *dart.Dart, error) {
 
 // printAccessDetails prints to console addresses and kubeconfig file paths of a cluster for user convenience
 func printAccessDetails(r *dart.Dart, name string, cluster tofu.Cluster, rancherURL string) {
-	fmt.Printf("*** %s CLUSTER\n", name)
+	var clusterAccessString string
+	clusterAccessString += fmt.Sprintf("*** %s CLUSTER ACCESS DETAILS\n", name)
 	if rancherURL != "" {
-		fmt.Printf("    Rancher UI: %s (admin/%s)\n", rancherURL, r.ChartVariables.AdminPassword)
+		clusterAccessString += fmt.Sprintf("    Rancher UI: %s (admin/%s)\n", rancherURL, r.ChartVariables.AdminPassword)
 	}
-	fmt.Println("    Kubernetes API:")
-	fmt.Printf("export KUBECONFIG=%q\n", cluster.Kubeconfig)
-	fmt.Printf("kubectl config use-context %q\n", cluster.Context)
+	clusterAccessString += fmt.Sprintln("    Kubernetes API:")
+	clusterAccessString += fmt.Sprintf("export KUBECONFIG=%q\n", cluster.Kubeconfig)
+	clusterAccessString += fmt.Sprintf("kubectl config use-context %q\n", cluster.Context)
 	for node, command := range cluster.NodeAccessCommands {
-		fmt.Printf("    Node %s: %q\n", node, command)
+		clusterAccessString += fmt.Sprintf("    Node %s: %q\n", node, command)
 	}
-	fmt.Println()
+	logrus.Infof(clusterAccessString)
 }
 
 // getAppAddressFor returns local cluster address data, public cluster address data and an error

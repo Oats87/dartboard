@@ -74,6 +74,7 @@ variable "node_module_variables" {
     })))
     efi         = optional(bool)
     secure_boot = optional(bool)
+    node_selector = optional(map(string))
   })
   default = {
     image_name             = null
@@ -128,5 +129,7 @@ variable "network_config" {
     ssh_bastion_host     = optional(string)
     ssh_bastion_user     = optional(string)
     ssh_bastion_key_path = optional(string)
+    images_by_name       = optional(map(string))
+    ssh_keys_by_name = optional(map(map(string)))
   })
 }

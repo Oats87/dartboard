@@ -2,6 +2,7 @@ package dart
 
 import (
 	"fmt"
+	"github.com/sirupsen/logrus"
 	"log"
 	"os"
 	"regexp"
@@ -146,15 +147,15 @@ func (ct *ClusterTemplate) ProcessNodesPerCluster() int {
 	var sum int32
 	yamlData, err := yaml.Marshal(ct.ClusterConfig)
 	if err != nil {
-		log.Fatalf("Error marshaling YAML: %v", err)
+		logrus.Fatalf("Error marshaling YAML: %v", err)
 	}
 
-	fmt.Printf("\nClusterTemplate.Config: %s\n", string(yamlData))
+	logrus.Infof("ClusterTemplate.Config: %s", string(yamlData))
 	for _, pool := range ct.ClusterConfig.MachinePools {
-		fmt.Printf("\nFound pool with %d quantity\n", int(pool.MachinePoolConfig.Quantity))
+		logrus.Infof("Found pool with %d quantity\n", int(pool.MachinePoolConfig.Quantity))
 		sum += pool.MachinePoolConfig.Quantity
 	}
-	fmt.Printf("\nFound a total of %d nodes across all pools\n", int(sum))
+	logrus.Infof("Found a total of %d nodes across all pools", int(sum))
 	ct.NodesPerCluster = int(sum)
 	return ct.NodesPerCluster
 }
