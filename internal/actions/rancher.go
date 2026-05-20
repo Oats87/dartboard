@@ -1,10 +1,12 @@
 package actions
 
 import (
+	"errors"
 	"fmt"
-	"github.com/sirupsen/logrus"
 	"strings"
 	"time"
+
+	"github.com/sirupsen/logrus"
 
 	"github.com/rancher/dartboard/internal/dart"
 	"github.com/rancher/dartboard/internal/tofu"
@@ -94,6 +96,7 @@ func ProvisionClustersInBatches(r *dart.Dart, template dart.ClusterTemplate, ran
 	}
 
 	batchNum := 0
+	var batchErrs []error
 	// Create batches of clusters from the template
 	for i := 0; i < template.ClusterCount; i += r.ClusterBatchSize {
 		// Create a batch of templates with unique names
@@ -109,14 +112,17 @@ func ProvisionClustersInBatches(r *dart.Dart, template dart.ClusterTemplate, ran
 
 		// Create and run a batch runner for this batch of templates
 		batchRunner := NewSequencedBatchRunner[dart.ClusterTemplate](len(batchTemplates))
-		err := batchRunner.Run(batchTemplates, statuses, clusterStatePath, rancherClient, nil)
-		if err != nil {
-			return err
+		if err := batchRunner.Run(batchTemplates, statuses, clusterStatePath, rancherClient, nil); err != nil {
+			logrus.Errorf("Batch %d had failures (continuing with remaining batches): %v", batchNum, err)
+			batchErrs = append(batchErrs, fmt.Errorf("batch %d: %w", batchNum, err))
 		}
 
 		batchNum++
 	}
 
+	if len(batchErrs) > 0 {
+		return fmt.Errorf("ProvisionClustersInBatches: %d batches had failures: %w", len(batchErrs), errors.Join(batchErrs...))
+	}
 	return nil
 }
 
@@ -216,22 +222,30 @@ func ImportClustersInBatches(r *dart.Dart, clusters []tofu.Cluster, rancherClien
 	}
 
 	// Enqueue clusters in batches and collect results
+	var batchErrs []error
+	batchNum := 0
 	for i := 0; i < len(clusters); i += r.ClusterBatchSize {
 		j := min(i+r.ClusterBatchSize, len(clusters))
 		batch := clusters[i:j]
 
 		batchRunner := NewSequencedBatchRunner[tofu.Cluster](len(batch))
-		err := batchRunner.Run(batch, statuses, clusterStatePath, rancherClient, rancherConfig)
-		if err != nil {
-			return err
+		batchRunner.UpstreamKubeconfigPath = r.UpstreamCluster.Kubeconfig
+		if err := batchRunner.Run(batch, statuses, clusterStatePath, rancherClient, rancherConfig); err != nil {
+			logrus.Errorf("Import batch %d had failures (continuing with remaining batches): %v", batchNum, err)
+			batchErrs = append(batchErrs, fmt.Errorf("batch %d: %w", batchNum, err))
 		}
+		batchNum++
 	}
 
+	if len(batchErrs) > 0 {
+		return fmt.Errorf("ImportClustersInBatches: %d batches had failures: %w", len(batchErrs), errors.Join(batchErrs...))
+	}
 	return nil
 }
 
 func importClusterWithRunner[J JobDataTypes](br *SequencedBatchRunner[J], cluster tofu.Cluster,
 	statuses map[string]*ClusterStatus, rancherClient *rancher.Client, rancherConfig *rancher.Config,
+	upstreamKubeconfigPath string,
 ) (skipped bool, err error) {
 	stateMutex.Lock()
 	cs := FindOrCreateStatusByName(statuses, cluster.Name)
@@ -254,7 +268,7 @@ func importClusterWithRunner[J JobDataTypes](br *SequencedBatchRunner[J], cluste
 		},
 	}
 	if !cs.Created {
-		if _, err = CreateK3SRKE2Cluster(rancherClient, rancherConfig, &importCluster); err != nil {
+		if _, err = CreateK3SRKE2Cluster(rancherClient, rancherConfig, upstreamKubeconfigPath, &importCluster); err != nil {
 			return false, fmt.Errorf("error while creating Steve Cluster with Name %s:\n%w", importCluster.Name, err)
 		}
 		err = BackoffWait(30, func() (finished bool, err error) {
@@ -381,24 +395,32 @@ func RegisterCustomClustersInBatches(r *dart.Dart, template tofu.CustomCluster, 
 	}
 
 	// endTemplate := min(r.ClusterBatchSize, len(custom_clusters))
+	var batchErrs []error
+	batchNum := 0
 	for startTemplate := 0; startTemplate < len(custom_clusters); startTemplate += r.ClusterBatchSize {
 		endTemplate := min(startTemplate+r.ClusterBatchSize, len(custom_clusters))
 		batchTemplates := custom_clusters[startTemplate:endTemplate]
 
 		batchRunner := NewSequencedBatchRunner[tofu.CustomCluster](len(batchTemplates))
-		err := batchRunner.Run(batchTemplates, statuses, clusterStatePath, rancherClient, rancherConfig)
-		if err != nil {
-			return err
+		batchRunner.UpstreamKubeconfigPath = r.UpstreamCluster.Kubeconfig
+		if err := batchRunner.Run(batchTemplates, statuses, clusterStatePath, rancherClient, rancherConfig); err != nil {
+			logrus.Errorf("Custom-register batch %d had failures (continuing with remaining batches): %v", batchNum, err)
+			batchErrs = append(batchErrs, fmt.Errorf("batch %d: %w", batchNum, err))
 		}
+		batchNum++
 		// endTemplate += min(r.ClusterBatchSize, len(custom_clusters)-endTemplate)
 	}
 
+	if len(batchErrs) > 0 {
+		return fmt.Errorf("RegisterCustomClustersInBatches: %d batches had failures: %w", len(batchErrs), errors.Join(batchErrs...))
+	}
 	return nil
 }
 
 func registerCustomClusterWithRunner[J JobDataTypes](br *SequencedBatchRunner[J],
 	template tofu.CustomCluster, statuses map[string]*ClusterStatus,
-	rancherClient *rancher.Client, rancherConfig *rancher.Config) (skipped bool, err error) {
+	rancherClient *rancher.Client, rancherConfig *rancher.Config,
+	upstreamKubeconfigPath string) (skipped bool, err error) {
 
 	logrus.Infof("[%s] Registering custom cluster with runner.", template.Name)
 	clusterName := template.Name
@@ -442,9 +464,17 @@ func registerCustomClusterWithRunner[J JobDataTypes](br *SequencedBatchRunner[J]
 					"https://192.168.64.1:5000",
 				},
 			},
+			"registry.suse.com": {
+				Endpoints: []string{
+					"https://192.168.64.1:5001",
+				},
+			},
 		},
 		Configs: map[string]rkev1.RegistryConfig{
 			"192.168.64.1:5000": {
+				InsecureSkipVerify: true,
+			},
+			"192.168.64.1:5001": {
 				InsecureSkipVerify: true,
 			},
 		},
@@ -452,11 +482,13 @@ func registerCustomClusterWithRunner[J JobDataTypes](br *SequencedBatchRunner[J]
 	var clusterResp *v1.SteveAPIObject
 	if !cs.Created {
 		logrus.Infof("[%s] Creating cluster object %s/%s", cs.Name, provCluster.Namespace, provCluster.Name)
-		clusterResp, err = CreateK3SRKE2Cluster(rancherClient, rancherConfig, provCluster)
+		clusterResp, err = CreateK3SRKE2Cluster(rancherClient, rancherConfig, upstreamKubeconfigPath, provCluster)
 		if err != nil {
 			logrus.Errorf("[%s] Error creating cluster object %s/%s: %v", cs.Name, provCluster.Namespace, provCluster.Name, err)
 			return false, err
 		}
+		// Why do we need to do this?
+		// update: 12/10/25 I think it's because sometimes Steve does not return the cluster even after we have created it
 		_, err = GetK3SRKE2Cluster(rancherClient, rancherConfig, provCluster)
 		if err != nil {
 			logrus.Errorf("[%s] Error getting cluster during creation of cluster %s/%s: %v", cs.Name, provCluster.Namespace, provCluster.Name, err)
@@ -486,14 +518,14 @@ func registerCustomClusterWithRunner[J JobDataTypes](br *SequencedBatchRunner[J]
 	}
 	provCluster.Spec.RKEConfig.MachinePools = machinePools
 
-	clusterObject, err := RegisterCustomCluster(rancherClient, clusterResp, provCluster, template.Nodes)
+	clusterObject, err := RegisterCustomCluster(rancherClient, rancherConfig, upstreamKubeconfigPath, clusterResp, provCluster, template.Nodes)
 	reports.TimeoutClusterReport(clusterObject, err)
 	if err != nil {
 		logrus.Errorf("[%s] Error registering custom cluster %s/%s: %v", cs.Name, provCluster.Namespace, provCluster.Name, err)
 		return false, err
 	}
 
-	err = VerifyCluster(rancherClient, rancherConfig, clusterObject)
+	err = VerifyCluster(rancherClient, rancherConfig, upstreamKubeconfigPath, clusterObject)
 	if err != nil {
 		logrus.Errorf("[%s] Error verifying custom cluster %s/%s: %v", cs.Name, provCluster.Namespace, provCluster.Name, err)
 		return false, err

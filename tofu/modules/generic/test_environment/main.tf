@@ -17,6 +17,7 @@ locals {
 }
 
 module "upstream_cluster" {
+  count                       = var.upstream_cluster != null ? 1 : 0
   source                      = "../../${var.upstream_cluster_distro_module}"
   project_name                = var.project_name
   name                        = "upstream"

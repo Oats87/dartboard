@@ -89,6 +89,7 @@ func Deploy(cli *cli.Context) error {
 	}
 
 	upstream := clusters["upstream"]
+
 	rancherVersion := r.ChartVariables.RancherVersion
 	rancherImageTag := "v" + rancherVersion
 	if r.ChartVariables.RancherImageTagOverride != "" {
@@ -313,6 +314,10 @@ func chartInstallRancher(r *dart.Dart, rancherImageTag string, cluster *tofu.Clu
 
 	chartVals := getRancherValsJSON(r.ChartVariables.RancherImageOverride, rancherImageTag, r.ChartVariables.AdminPassword, rancherClusterName, extraEnv, r.ChartVariables.RancherReplicas)
 
+	for k, v := range r.ChartVariables.RancherValues {
+		chartVals[k] = v
+	}
+
 	chartValString := "RANCHER CHART VALS:\n"
 	for key, value := range chartVals {
 		chartValString += fmt.Sprintf("%s = %v\n", key, value)
@@ -428,7 +433,7 @@ func getRancherMonitoringValsJSON(reserveNodeForMonitoring bool, mimirURL string
 				"evaluationInterval": "1m",
 				"nodeSelector":       nodeSelector,
 				"tolerations":        tolerations,
-				"resources":          map[string]any{"limits": map[string]any{"memory": "10000Mi"}},
+				"resources":          map[string]any{"limits": map[string]any{"memory": "256000Mi"}},
 				"retentionSize":      "50GiB",
 				"scrapeInterval":     "1m",
 
@@ -480,6 +485,7 @@ func getRancherMonitoringValsJSON(reserveNodeForMonitoring bool, mimirURL string
 				"clusterName":           "local",
 				"systemDefaultRegistry": "",
 			},
+			"disableProxyIPv6": true,
 		},
 		"systemDefaultRegistry": "",
 	}

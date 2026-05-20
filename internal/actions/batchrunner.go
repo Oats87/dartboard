@@ -1,6 +1,7 @@
 package actions
 
 import (
+	"errors"
 	"fmt"
 	"runtime"
 	"sync"
@@ -46,6 +47,11 @@ type SequencedBatchRunner[J JobDataTypes] struct {
 	// Channel for each individual job's results/error output
 	Results chan jobResult
 
+	// Path to the upstream cluster kubeconfig — used to build provisioning
+	// watch clients that bypass Rancher's steve aggregation (which has a ~60s
+	// idle ceiling on watch streams and drops bookmark events).
+	UpstreamKubeconfigPath string
+
 	// WaitGroups for Job workers and the Updates channel which sequences writes to the ClustarStatus state file
 	wgWorkers sync.WaitGroup
 	wgWriter  sync.WaitGroup
@@ -84,36 +90,43 @@ func (br *SequencedBatchRunner[J]) Run(batch []J,
 	}
 	close(br.Jobs)
 
-	// Reset skip count for this batch
+	// Collect ALL results, even after failures, so one slow/failed cluster
+	// doesn't waste the rest of the batch's infrastructure spend. Aggregate
+	// errors with errors.Join and return them after every job has reported in.
 	numSkipped := 0
-	sleepAfter := false
-	// Collect results
+	var jobErrs []error
 	for range batch {
 		res := <-br.Results
 		if res.err != nil {
-			// Clean up in case of error
-			br.Wait()
-			return fmt.Errorf("error during batch run: %w", res.err)
+			jobErrs = append(jobErrs, res.err)
+			continue
 		}
 		if res.skipped {
 			numSkipped++
 		}
-		// Decide whether to sleep before propagating error
-		sleepAfter = numSkipped < len(batch)/2
 	}
+	// Decide sleep based on completed batch state
+	sleepAfter := numSkipped < len(batch)/2
 
 	// After finishing this batch:
-	if sleepAfter {
-		// If fewer than half were skipped, sleep briefly
+	if len(jobErrs) > 0 {
+		logrus.Errorf("Batch summary: %d/%d jobs failed, %d skipped, %d succeeded",
+			len(jobErrs), len(batch), numSkipped, len(batch)-len(jobErrs)-numSkipped)
+		for i, e := range jobErrs {
+			logrus.Errorf("  failure [%d/%d]: %v", i+1, len(jobErrs), e)
+		}
+	} else if sleepAfter {
 		logrus.Infof("Batch done: %d/%d skipped; sleeping before next batch.\n", numSkipped, len(batch))
 		time.Sleep(shepherddefaults.TwoMinuteTimeout)
 	} else {
-		// Otherwise, go straight into the next batch
 		logrus.Infof("Batch done: %d/%d skipped; continuing without sleep.\n", numSkipped, len(batch))
 	}
 
 	// Clean up
 	br.Wait()
+	if len(jobErrs) > 0 {
+		return fmt.Errorf("batch had %d failures: %w", len(jobErrs), errors.Join(jobErrs...))
+	}
 	return nil
 }
 
@@ -164,17 +177,18 @@ func (br *SequencedBatchRunner[J]) worker(statuses map[string]*ClusterStatus,
 		// Use type assertion to determine which function to call
 		switch typedJob := any(job).(type) {
 		case tofu.Cluster:
-			skipped, err = importClusterWithRunner(br, typedJob, statuses, client, config)
+			skipped, err = importClusterWithRunner(br, typedJob, statuses, client, config, br.UpstreamKubeconfigPath)
 		case dart.ClusterTemplate:
 			skipped, err = provisionClusterWithRunner(br, typedJob, statuses, client)
 		case tofu.CustomCluster:
-			skipped, err = registerCustomClusterWithRunner(br, typedJob, statuses, client, config)
+			skipped, err = registerCustomClusterWithRunner(br, typedJob, statuses, client, config, br.UpstreamKubeconfigPath)
 		default:
 			err = fmt.Errorf("unsupported job type: %T", job)
 		}
+		// Always continue draining the Jobs channel even after a failure —
+		// the batch result loop in Run() aggregates errors across all jobs
+		// rather than aborting on the first one. Returning here would leave
+		// queued jobs unprocessed and stall the result collector.
 		br.Results <- jobResult{skipped: skipped, err: err}
-		if err != nil {
-			return
-		}
 	}
 }

@@ -38,11 +38,23 @@ variable "upstream_cluster" {
     node_module_variables = any // Node module-specific variables
     lb_node_module_variables = any // Node module-specific variables
   })
+  nullable = true
 }
 
 variable "upstream_cluster_distro_module" {
   description = "Name of the module to use for the upstream cluster"
   default     = "generic/k3s"
+}
+
+# Pre-existing upstream cluster (used when var.upstream_cluster is null and the user is
+# pointing dartboard at an externally-managed cluster via kubeconfig). The shape mirrors
+# the `tofu.Cluster` Go struct (app_addresses, kubeconfig, context, kubernetes_addresses,
+# node_access_commands, ingress_class_name, reserve_node_for_monitoring, name) and is
+# emitted as the "upstream" cluster in this module's outputs when provided.
+variable "upstream_cluster_pre_existing" {
+  type     = any
+  default  = null
+  nullable = true
 }
 
 # Downstream cluster specifics

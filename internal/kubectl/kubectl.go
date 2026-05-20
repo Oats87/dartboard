@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"strings"
 	"time"
@@ -150,6 +151,54 @@ func GetStatus(kubepath, kind, name, namespace string) (map[string]any, error) {
 	}
 
 	return out, nil
+}
+
+// PortForward starts `kubectl port-forward` against target (e.g. "pod/foo" or
+// "svc/bar") in namespace, mapping remotePort to a free local port. It blocks
+// until the local port accepts a TCP connection or the deadline elapses, then
+// returns the local port and a stop func that kills the child process.
+func PortForward(kubepath, namespace, target string, remotePort int) (int, func(), error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, nil, fmt.Errorf("could not pick a free local port: %w", err)
+	}
+	localPort := listener.Addr().(*net.TCPAddr).Port
+	_ = listener.Close()
+
+	cmd := vendored.Command("kubectl",
+		"--kubeconfig="+kubepath,
+		"port-forward",
+		"--namespace="+namespace,
+		target,
+		fmt.Sprintf("%d:%d", localPort, remotePort),
+	)
+	cmd.Stdout = log.Writer()
+	cmd.Stderr = log.Writer()
+
+	if err := cmd.Start(); err != nil {
+		return 0, nil, fmt.Errorf("failed to start port-forward: %w", err)
+	}
+
+	stop := func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
+	}
+
+	addr := fmt.Sprintf("127.0.0.1:%d", localPort)
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, dialErr := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+		if dialErr == nil {
+			_ = conn.Close()
+			return localPort, stop, nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	stop()
+	return 0, nil, fmt.Errorf("port-forward to %s/%s did not become ready on %s within 10s", namespace, target, addr)
 }
 
 func K6run(kubeconfig, testPath string, envVars, tags map[string]string, printLogs bool, localBaseURL string, record bool) error {

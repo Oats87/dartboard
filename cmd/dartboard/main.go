@@ -17,9 +17,11 @@ limitations under the License.
 package main
 
 import (
-	"log"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/rancher/dartboard/cmd/dartboard/subcommands"
 	cli "github.com/urfave/cli/v2"
@@ -101,10 +103,131 @@ func main() {
 				Description: "runs `tofu destroy` and then deploys all the provisioned clusters",
 				Action:      subcommands.Redeploy,
 			},
+			{
+				Name:        "collect-metrics",
+				Usage:       "Collects scaling-relevant metrics (CPU/mem/disk/net) from upstream Rancher's Prometheus",
+				Description: "port-forwards to the upstream cluster's rancher-monitoring Prometheus, runs a curated PromQL catalog over a time window, and exports CSV per series + summary.json",
+				Action:      subcommands.CollectMetrics,
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  subcommands.ArgStart,
+						Usage: "RFC3339 start of metrics window (default: end - last)",
+					},
+					&cli.StringFlag{
+						Name:  subcommands.ArgEnd,
+						Usage: "RFC3339 end of metrics window (default: now)",
+					},
+					&cli.StringFlag{
+						Name:  subcommands.ArgLast,
+						Value: "1h",
+						Usage: "Duration to look back from --end when --start is not given",
+					},
+					&cli.StringFlag{
+						Name:  subcommands.ArgStep,
+						Value: "30s",
+						Usage: "Sample step for query_range",
+					},
+					&cli.StringFlag{
+						Name:  subcommands.ArgOutput,
+						Usage: "Output directory (default: ./metrics-{workspace}-{timestamp}/)",
+					},
+				},
+			},
+			{
+				Name:        "collect-profiles",
+				Usage:       "Collects pprof profiles from upstream Rancher pods over a bounded duration",
+				Description: "kubectl-execs into each Rancher pod in cattle-system on a fixed cadence, curls /debug/pprof/<type>, and writes per-snapshot files under ./profiles-{workspace}-{timestamp}/",
+				Action:      subcommands.CollectProfiles,
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  subcommands.ArgFor,
+						Value: "10m",
+						Usage: "Total duration to keep collecting (e.g. 10m, 1h)",
+					},
+					&cli.StringFlag{
+						Name:  subcommands.ArgInterval,
+						Value: "120s",
+						Usage: "Time between snapshots",
+					},
+					&cli.StringFlag{
+						Name:  subcommands.ArgProfiles,
+						Value: "goroutine,heap,profile",
+						Usage: "Comma-separated pprof types: goroutine,heap,threadcreate,block,mutex,profile",
+					},
+					&cli.StringFlag{
+						Name:  subcommands.ArgCPUDuration,
+						Value: "30s",
+						Usage: "Sampling duration for the CPU 'profile' type",
+					},
+					&cli.StringFlag{
+						Name:  subcommands.ArgOutput,
+						Usage: "Output directory (default: ./profiles-{workspace}-{timestamp}/)",
+					},
+				},
+			},
+			{
+				Name:        "collect-logs",
+				Usage:       "Collects pod logs (current, previous, describe, events, audit) from upstream Rancher-family pods over a bounded duration",
+				Description: "snapshots `kubectl logs --since=<interval>`, previous logs, describe and events for each selected app's pods on a fixed cadence, writing per-snapshot files under ./logs-{workspace}-{timestamp}/",
+				Action:      subcommands.CollectLogs,
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  subcommands.ArgFor,
+						Value: "10m",
+						Usage: "Total duration to keep collecting (e.g. 10m, 1h)",
+					},
+					&cli.StringFlag{
+						Name:  subcommands.ArgInterval,
+						Value: "60s",
+						Usage: "Time between snapshots; --since for log fetches uses this value",
+					},
+					&cli.StringFlag{
+						Name:  subcommands.ArgApps,
+						Value: "rancher",
+						Usage: "Comma-separated apps to collect: rancher, cattle-cluster-agent, fleet-controller, fleet-agent",
+					},
+					&cli.StringFlag{
+						Name:  subcommands.ArgOutput,
+						Usage: "Output directory (default: ./logs-{workspace}-{timestamp}/)",
+					},
+				},
+			},
 		},
 	}
 
-	if err := app.Run(os.Args); err != nil {
-		log.Fatal(err)
+	subcmd := subcommandFromArgs(os.Args)
+	start := time.Now()
+	err := app.Run(os.Args)
+	elapsed := time.Since(start).Round(time.Second)
+
+	prefix := "dartboard"
+	if subcmd != "" {
+		prefix = "dartboard " + subcmd
 	}
+
+	if err != nil {
+		fmt.Printf("%s exited with error after %s: %v\n", prefix, elapsed, err)
+		os.Exit(1)
+	}
+	fmt.Printf("%s exited successfully (took %s)\n", prefix, elapsed)
+}
+
+// subcommandFromArgs returns the first non-flag token in args[1:], skipping the
+// global -d/--dart flag and its value. Returns "" when no subcommand is present.
+func subcommandFromArgs(args []string) string {
+	i := 1
+	for i < len(args) {
+		a := args[i]
+		switch {
+		case a == "-d" || a == "--dart":
+			i += 2
+		case strings.HasPrefix(a, "--dart=") || strings.HasPrefix(a, "-d="):
+			i++
+		case strings.HasPrefix(a, "-"):
+			i++
+		default:
+			return a
+		}
+	}
+	return ""
 }

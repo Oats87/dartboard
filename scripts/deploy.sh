@@ -1,9 +1,317 @@
 #!/bin/bash
 
-LOG_DIR="logs"
+set -e
+
+# Script to deploy dartboard with logging
+# Usage: ./scripts/deploy.sh [options]
+# If no dart file is specified, an interactive menu will be shown.
+# Environment variables:
+#   DART              - Path to dart file (default: interactive selection or darts/k3d.yaml in non-interactive mode)
+#   LOG_DIR           - Directory for logs (default: logs)
+#   DEPLOY_FLAGS      - Additional flags for dartboard deploy (default: none)
+#   DARTBOARD_BIN     - Path to dartboard binary (default: ./dartboard)
+
+# Check if running in non-interactive mode (CI, piped input)
+is_non_interactive() {
+    [[ ! -t 0 ]]
+}
+
+# Show interactive dart selection menu
+select_dart_interactively() {
+    echo "No dart file specified. Please select one:"
+    echo ""
+
+    local menu_items=()
+    local dart_files=()
+
+    # Discover dart files and build menu
+    while IFS= read -r file; do
+        dart_files+=("$file")
+
+        local basename_file=$(basename "$file")
+        # Extract description from first comment line
+        local description=$(grep -m 1 "^#" "$file" 2>/dev/null | sed 's/^# *//' || echo "")
+
+        if [[ -n "$description" ]]; then
+            menu_items+=("$basename_file - $description")
+        else
+            menu_items+=("$basename_file")
+        fi
+    done < <(find darts/ -maxdepth 1 -name "*.yaml" -type f | sort)
+
+    # Check if any dart files exist
+    if [[ ${#dart_files[@]} -eq 0 ]]; then
+        echo "Error: No dart files found in darts/ directory"
+        exit 1
+    fi
+
+    # Use select for interactive menu
+    local PS3="Select a dart file (1-${#menu_items[@]}): "
+    select choice in "${menu_items[@]}"; do
+        if [[ -n "$choice" ]]; then
+            local index=$((REPLY - 1))
+            echo "${dart_files[$index]}"
+            return 0
+        else
+            echo "Invalid selection. Please enter a number between 1 and ${#menu_items[@]}."
+        fi
+    done
+}
+
+# Configuration with defaults
+LOG_DIR="${LOG_DIR:-logs}"
 RUN_TRACKER=".deploy-count"
 LOG_PREFIX="deploy"
 LOG_SUFFIX=".log"
-CMD="./dartboard -d darts/prairie-custom-huge.yaml deploy"
+DARTBOARD_BIN="${DARTBOARD_BIN:-./dartboard}"
+DEPLOY_FLAGS="${DEPLOY_FLAGS:-}"
 
-./scripts/command.sh ${LOG_DIR} ${RUN_TRACKER} ${LOG_PREFIX} ${LOG_SUFFIX} "true" ${CMD}
+# Parse command line arguments
+SHOW_HELP=false
+DART_FROM_FLAG=""
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -d|--dart)
+      DART_FROM_FLAG="$2"
+      shift 2
+      ;;
+    --log-dir)
+      LOG_DIR="$2"
+      shift 2
+      ;;
+    -h|--help)
+      SHOW_HELP=true
+      shift
+      ;;
+    *)
+      # Collect remaining args as deploy flags
+      DEPLOY_FLAGS="${DEPLOY_FLAGS} $1"
+      shift
+      ;;
+  esac
+done
+
+# Determine DART value with priority: flag > env var > interactive > default
+if [[ -n "$DART_FROM_FLAG" ]]; then
+    # Flag takes precedence
+    DART="$DART_FROM_FLAG"
+elif [[ -n "$DART" ]]; then
+    # Environment variable is set
+    : # DART already set, do nothing
+elif is_non_interactive; then
+    # Non-interactive mode (CI, piped input), use default
+    DART="darts/k3d.yaml"
+    echo "Non-interactive mode detected. Using default dart: ${DART}"
+else
+    # Interactive mode: show selection menu
+    DART=$(select_dart_interactively)
+    if [[ -z "$DART" ]]; then
+        echo "No dart file selected."
+        exit 1
+    fi
+    echo ""
+    echo "Selected: ${DART}"
+fi
+
+# Show help if requested
+if [ "$SHOW_HELP" = true ]; then
+  cat <<EOF
+Usage: $0 [options]
+
+Options:
+  -d, --dart PATH       Path to dart file
+  --log-dir DIR         Directory for logs (default: \$LOG_DIR or logs)
+  -h, --help            Show this help message
+
+If no dart file is specified via -d flag or DART environment variable,
+an interactive menu will be displayed to select from available dart files.
+
+Additional flags are passed to 'dartboard deploy' command.
+
+Environment Variables:
+  DART                  Default dart file path
+  LOG_DIR               Default log directory
+  DEPLOY_FLAGS          Additional flags for dartboard deploy
+  DARTBOARD_BIN         Path to dartboard binary (default: ./dartboard)
+
+Examples:
+  # Interactive selection (when DART is not set)
+  $0
+
+  # Use specific dart file via flag
+  $0 -d darts/aws.yaml
+
+  # Use environment variable
+  DART=darts/prairie-custom-huge-upstream.yaml $0
+
+  # Add deployment flags
+  $0 --skip-charts --skip-refresh
+
+  # Combine environment variable with flags
+  DART=darts/azure.yaml $0 --skip-apply
+EOF
+  exit 0
+fi
+
+# Validate dartboard binary exists
+if [ ! -f "${DARTBOARD_BIN}" ]; then
+  echo "Error: Dartboard binary not found at ${DARTBOARD_BIN}"
+  echo "Build it with: make build"
+  exit 1
+fi
+
+# Validate dart file exists
+if [ ! -f "${DART}" ]; then
+  echo "Error: Dart file not found at ${DART}"
+  echo "Available dart files:"
+  ls -1 darts/*.yaml 2>/dev/null || echo "  (none found in darts/)"
+  exit 1
+fi
+
+# Create log directory if it doesn't exist
+mkdir -p "${LOG_DIR}"
+
+# State file to track last deployment
+STATE_FILE="${LOG_DIR}/.dartboard-state"
+
+# Save deployment state for destroy to use
+cat > "${STATE_FILE}" <<EOF
+# Dartboard deployment state
+# This file is automatically generated by deploy.sh
+# Used by destroy.sh to ensure the same dart is destroyed
+DART=${DART}
+TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+DEPLOYED_BY=${USER:-unknown}
+EOF
+
+echo "Deployment state saved to: ${STATE_FILE}"
+
+DART_BASENAME=$(basename "${DART}" .yaml)
+METRICS_TIMESTAMP=$(date -u +"%Y%m%d-%H%M%S")
+METRICS_DIR_BASE="metrics-${DART_BASENAME}-${METRICS_TIMESTAMP}"
+PROFILES_DIR_BASE="profiles-${DART_BASENAME}-${METRICS_TIMESTAMP}"
+LOGS_DIR_BASE="logs-${DART_BASENAME}-${METRICS_TIMESTAMP}"
+PROFILES_DURING_FOR="${PROFILES_DURING_FOR:-168h}"
+PROFILES_FINAL_FOR="${PROFILES_FINAL_FOR:-5m}"
+LOGS_DURING_FOR="${LOGS_DURING_FOR:-168h}"
+LOGS_FINAL_FOR="${LOGS_FINAL_FOR:-5m}"
+PROFILES_LOG="${LOG_DIR}/profiles-${DART_BASENAME}-${METRICS_TIMESTAMP}-during.log"
+LOGS_LOG="${LOG_DIR}/logs-${DART_BASENAME}-${METRICS_TIMESTAMP}-during.log"
+
+# Bundle deploy + collect-metrics + collect-profiles + collect-logs into a
+# single wrapper script so all phases run inside the same screen session
+# started by command.sh. This way the user can Ctrl+C the tail (or disconnect
+# from the host entirely) without losing collection — the screen session keeps
+# running on its own and proceeds through every phase when the deploy finishes.
+#
+# Profiles and logs are each collected in two phases:
+#   1. Background during deploy (continuous, SIGTERM'd when deploy returns)
+#   2. Final bounded snapshot after metrics
+DEPLOY_RUNNER=$(mktemp -t "dartboard-deploy-runner.${DART_BASENAME}.XXXXXX")
+cat > "${DEPLOY_RUNNER}" <<EOF
+#!/bin/bash
+trap 'rm -f "\$0"' EXIT
+
+PROFILES_DURING_DIR="${PROFILES_DIR_BASE}-during"
+PROFILES_FINAL_DIR_BASE="${PROFILES_DIR_BASE}-final"
+LOGS_DURING_DIR="${LOGS_DIR_BASE}-during"
+LOGS_FINAL_DIR_BASE="${LOGS_DIR_BASE}-final"
+
+# Start background profile collection. --for is huge; SIGTERM will cut it short
+# when deploy returns. The collector retries pod discovery internally until
+# Rancher comes up, so starting before deploy is safe.
+"${DARTBOARD_BIN}" -d "${DART}" collect-profiles \\
+  --output "\${PROFILES_DURING_DIR}" \\
+  --for "${PROFILES_DURING_FOR}" \\
+  >"${PROFILES_LOG}" 2>&1 &
+PROFILES_PID=\$!
+echo "Background profile collection started (pid \${PROFILES_PID}), log: ${PROFILES_LOG}"
+
+# Same idea for logs: huge --for, SIGTERM'd alongside profiles when deploy returns.
+"${DARTBOARD_BIN}" -d "${DART}" collect-logs \\
+  --output "\${LOGS_DURING_DIR}" \\
+  --for "${LOGS_DURING_FOR}" \\
+  >"${LOGS_LOG}" 2>&1 &
+LOGS_PID=\$!
+echo "Background log collection started (pid \${LOGS_PID}), log: ${LOGS_LOG}"
+
+"${DARTBOARD_BIN}" -d "${DART}" deploy${DEPLOY_FLAGS}
+DEPLOY_EXIT_CODE=\$?
+
+# Stop background collectors with SIGTERM and wait for them to flush manifest.
+# No SIGKILL — the existing signal handlers need time to write manifest.json.
+if kill -0 "\${PROFILES_PID}" 2>/dev/null; then
+  kill -TERM "\${PROFILES_PID}" 2>/dev/null || true
+  wait "\${PROFILES_PID}" 2>/dev/null || true
+fi
+if kill -0 "\${LOGS_PID}" 2>/dev/null; then
+  kill -TERM "\${LOGS_PID}" 2>/dev/null || true
+  wait "\${LOGS_PID}" 2>/dev/null || true
+fi
+
+if [ "\${DEPLOY_EXIT_CODE}" -eq 0 ]; then
+  METRICS_DIR="${METRICS_DIR_BASE}"
+  PROFILES_FINAL_DIR="\${PROFILES_FINAL_DIR_BASE}"
+  LOGS_FINAL_DIR="\${LOGS_FINAL_DIR_BASE}"
+  echo ""
+  echo "Deploy succeeded. Collecting metrics into \${METRICS_DIR}/ ..."
+else
+  METRICS_DIR="${METRICS_DIR_BASE}-FAILED"
+  PROFILES_FINAL_DIR="\${PROFILES_FINAL_DIR_BASE}-FAILED"
+  LOGS_FINAL_DIR="\${LOGS_FINAL_DIR_BASE}-FAILED"
+  if [ -d "\${PROFILES_DURING_DIR}" ]; then
+    mv "\${PROFILES_DURING_DIR}" "\${PROFILES_DURING_DIR}-FAILED" || true
+  fi
+  if [ -d "\${LOGS_DURING_DIR}" ]; then
+    mv "\${LOGS_DURING_DIR}" "\${LOGS_DURING_DIR}-FAILED" || true
+  fi
+  echo ""
+  echo "Deploy FAILED (exit \${DEPLOY_EXIT_CODE}). Attempting to collect metrics into \${METRICS_DIR}/ ..."
+fi
+
+"${DARTBOARD_BIN}" -d "${DART}" collect-metrics --output "\${METRICS_DIR}"
+COLLECT_EXIT_CODE=\$?
+
+if [ "\${COLLECT_EXIT_CODE}" -ne 0 ]; then
+  echo "Warning: collect-metrics exited \${COLLECT_EXIT_CODE} (cluster may be unhealthy after a failed deploy)."
+else
+  echo "Metrics written to: \${METRICS_DIR}/"
+fi
+
+echo ""
+echo "Collecting final profile snapshot into \${PROFILES_FINAL_DIR}/ (--for ${PROFILES_FINAL_FOR}) ..."
+"${DARTBOARD_BIN}" -d "${DART}" collect-profiles \\
+  --output "\${PROFILES_FINAL_DIR}" --for "${PROFILES_FINAL_FOR}"
+PROFILES_FINAL_EXIT=\$?
+if [ "\${PROFILES_FINAL_EXIT}" -ne 0 ]; then
+  echo "Warning: final collect-profiles exited \${PROFILES_FINAL_EXIT}."
+else
+  echo "Final profiles written to: \${PROFILES_FINAL_DIR}/"
+fi
+
+echo ""
+echo "Collecting final log snapshot into \${LOGS_FINAL_DIR}/ (--for ${LOGS_FINAL_FOR}) ..."
+"${DARTBOARD_BIN}" -d "${DART}" collect-logs \\
+  --output "\${LOGS_FINAL_DIR}" --for "${LOGS_FINAL_FOR}"
+LOGS_FINAL_EXIT=\$?
+if [ "\${LOGS_FINAL_EXIT}" -ne 0 ]; then
+  echo "Warning: final collect-logs exited \${LOGS_FINAL_EXIT}."
+else
+  echo "Final logs written to: \${LOGS_FINAL_DIR}/"
+fi
+
+exit "\${DEPLOY_EXIT_CODE}"
+EOF
+chmod +x "${DEPLOY_RUNNER}"
+
+echo "Deploying with dart: ${DART}"
+echo "Logs will be written to:        ${LOG_DIR}/"
+echo "Deploy command:                 ${DARTBOARD_BIN} -d ${DART} deploy${DEPLOY_FLAGS}"
+echo "Background profiles (during):   ${PROFILES_DIR_BASE}-during[-FAILED]/  (log: ${PROFILES_LOG})"
+echo "Background logs (during):       ${LOGS_DIR_BASE}-during[-FAILED]/      (log: ${LOGS_LOG})"
+echo "Then collect-metrics:           ${DARTBOARD_BIN} -d ${DART} collect-metrics --output ${METRICS_DIR_BASE}[-FAILED]"
+echo "Then final collect-profiles:    ${PROFILES_DIR_BASE}-final[-FAILED]/  (--for ${PROFILES_FINAL_FOR})"
+echo "Then final collect-logs:        ${LOGS_DIR_BASE}-final[-FAILED]/      (--for ${LOGS_FINAL_FOR})"
+echo ""
+
+exec ./scripts/command.sh "${LOG_DIR}" "${RUN_TRACKER}" "${LOG_PREFIX}" "${LOG_SUFFIX}" "true" "${DEPLOY_RUNNER}"

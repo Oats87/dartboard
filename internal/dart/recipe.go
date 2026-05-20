@@ -2,6 +2,7 @@ package dart
 
 import (
 	"fmt"
+	"github.com/rancher/dartboard/internal/tofu"
 	"github.com/sirupsen/logrus"
 	"log"
 	"os"
@@ -23,6 +24,7 @@ type Dart struct {
 	ClusterTemplates       []ClusterTemplate `yaml:"cluster_templates"`
 	TestVariables          TestVariables     `yaml:"test_variables"`
 	TofuWorkspaceStatePath string            `yaml:"-"` // omit from YAML output
+	UpstreamCluster        tofu.Cluster      `yaml:"upstream_cluster"`
 }
 
 type ClusterTemplate struct {
@@ -48,7 +50,7 @@ type ChartVariables struct {
 	RancherMonitoringVersion    string           `yaml:"rancher_monitoring_version"`
 	CertManagerVersion          string           `yaml:"cert_manager_version"`
 	TesterGrafanaVersion        string           `yaml:"tester_grafana_version"`
-	RancherValues               string           `yaml:"rancher_values"`
+	RancherValues               map[string]any   `yaml:"rancher_values"`
 	ExtraEnvironmentVariables   []map[string]any `yaml:"extra_environment_variables"`
 }
 

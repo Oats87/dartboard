@@ -8,6 +8,13 @@ variable "upstream_cluster_distro_module" {
   default     = "k3d/k3s"
 }
 
+variable "upstream_cluster_pre_existing" {
+  description = "Pre-existing upstream cluster definition (used when upstream_cluster is null)"
+  type        = any
+  default     = null
+  nullable    = true
+}
+
 variable "downstream_cluster_templates" {
   description = "List of downstream cluster configurations. See tofu/modules/generic/test_environment/variables.tf for details"
   type        = list(any)

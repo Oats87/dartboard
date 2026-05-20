@@ -17,6 +17,7 @@ limitations under the License.
 package subcommands
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/sirupsen/logrus"
 	"path/filepath"
@@ -71,11 +72,57 @@ func prepare(cli *cli.Context) (*tofu.Tofu, *dart.Dart, error) {
 		return nil, nil, err
 	}
 
+	if !isUpstreamClusterZero(d.UpstreamCluster) {
+		if d.TofuVariables == nil {
+			d.TofuVariables = map[string]any{}
+		}
+		raw, _ := json.Marshal(d.UpstreamCluster)
+		var asMap map[string]any
+		_ = json.Unmarshal(raw, &asMap)
+		// format.ConvertValueToHCL panics on nil interior values; drop them so
+		// optional/unset fields (e.g. node_access_commands) don't blow up serialization.
+		d.TofuVariables["upstream_cluster_pre_existing"] = stripNils(asMap)
+	}
+
 	tf, err := tofu.New(d.TofuVariables, d.TofuMainDirectory, d.TofuWorkspace, d.TofuParallelism, true)
 	if err != nil {
 		return nil, nil, err
 	}
 	return tf, d, nil
+}
+
+// isUpstreamClusterZero reports whether the dart's top-level upstream_cluster block
+// carries no actionable values. When the dart file omits the block entirely, the struct
+// is its zero value and we skip injecting it as a tofu variable so the upstream output
+// stays null (and the existing upstream_cluster module path runs unchanged).
+func isUpstreamClusterZero(c tofu.Cluster) bool {
+	return c.Kubeconfig == "" &&
+		c.AppAddresses.Public.Name == "" &&
+		c.AppAddresses.Private.Name == "" &&
+		c.AppAddresses.Tunnel.Name == ""
+}
+
+func stripNils(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for k, val := range x {
+			if cleaned := stripNils(val); cleaned != nil {
+				out[k] = cleaned
+			}
+		}
+		return out
+	case []any:
+		out := make([]any, 0, len(x))
+		for _, val := range x {
+			if cleaned := stripNils(val); cleaned != nil {
+				out = append(out, cleaned)
+			}
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 // printAccessDetails prints to console addresses and kubeconfig file paths of a cluster for user convenience
